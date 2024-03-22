@@ -6,9 +6,6 @@ windowWidth, windowHeight :: Int
 windowWidth = 900
 windowHeight = 600
 
-pipeWidth :: Float
-pipeWidth = 50
-
 gravity :: Float
 gravity = -500
 
@@ -17,6 +14,9 @@ groundHeight = 70
 
 cloudHeight :: Float
 cloudHeight = 70
+
+pipeWidth :: Float
+pipeWidth = 70
 
 brown :: Color
 brown = makeColor (139/255) (69/255) (19/255) 1
@@ -32,25 +32,14 @@ data GameState = GameState {
 }
 
 initialState :: StdGen -> IO GameState
-initialState gen = do
-    let pipes = generateInitialPipes gen
-    return GameState {
-        birdY = 0,
-        birdVelocity = 0,
-        pipes = pipes,
-        gameOver = False
-    }
-
-generateInitialPipes :: StdGen -> [(Float, Float)]
-generateInitialPipes gen =
-    let (gen1, gen2) = split gen
-        pipeGap = 200
-        minHeight = 100
-        maxHeight = fromIntegral windowHeight - groundHeight - cloudHeight - pipeGap - minHeight
-        (topHeight, gen') = randomR (minHeight, maxHeight) gen1
-        (gapSize, gen'') = randomR (80 :: Int, 110 :: Int) gen2
-        bottomHeight = fromIntegral windowHeight - groundHeight - topHeight - pipeGap - fromIntegral gapSize
-    in [(fromIntegral windowWidth, topHeight), (fromIntegral windowWidth, -bottomHeight)]
+initialState _ = return GameState {
+    birdY = 0,
+    birdVelocity = 0,
+    pipes = initialPipes,
+    gameOver = False
+}
+  where
+    initialPipes = [(fromIntegral windowWidth / 2, fromIntegral windowHeight / 4)]
 
 main :: IO ()
 main = do
@@ -60,23 +49,26 @@ main = do
            cyan
            60
            initialState
-           (drawState gen)
+           drawState
            handleEvent
-           (\dt gameState -> stepGame dt gameState gen)
+           stepGame
 
-drawState :: StdGen -> GameState -> IO Picture
-drawState gen gameState
+drawState :: GameState -> IO Picture
+drawState gameState
     | gameOver gameState = drawGameOverScreen
     | otherwise = drawGameScreen gameState
 
 drawGameScreen :: GameState -> IO Picture
-drawGameScreen (GameState birdY _ pipes _) = do
+drawGameScreen (GameState birdY _ pipes gameOver) = do
     let
-        pipePictures = map (\(x, h) -> drawPipe x h) pipes
         bird = translate 0 birdY $ color yellow $ circleSolid 20
         ground = translate 0 (-fromIntegral windowHeight / 2 + groundHeight / 2) $ color brown $ rectangleSolid (fromIntegral windowWidth) groundHeight
         cloud = translate 0 (fromIntegral windowHeight / 2 - cloudHeight / 2) $ color white $ rectangleSolid (fromIntegral windowWidth) cloudHeight
-    return $ pictures (bird : pipePictures ++ [ground, cloud])
+        drawPipe (x, gapY) = pictures [ translate x (gapY / 2) $ color green $ rectangleSolid pipeWidth (fromIntegral windowHeight - gapY - groundHeight),
+                                        translate x (- (gapY / 2)) $ color green $ rectangleSolid pipeWidth (fromIntegral windowHeight - gapY - groundHeight),
+                                        translate x 0 $ color cyan $ rectangleSolid pipeWidth 80]
+        pipesPictures = mconcat $ map drawPipe pipes
+    return $ pictures [pipesPictures, bird, cloud, ground]
 
 drawGameOverScreen :: IO Picture
 drawGameOverScreen = do
@@ -84,14 +76,6 @@ drawGameOverScreen = do
         gameOverText = translate (-200) 0 $ scale 0.2 0.2 $ color red $ text "Game Over"
         restartText = translate (-300) (-100) $ scale 0.4 0.4 $ color blue $ text "Press Space to Restart"
     return $ pictures [gameOverText, restartText]
-
-drawPipe :: Float -> Float -> Picture
-drawPipe x height =
-    let
-        halfWidth = pipeWidth / 2
-        upperPipe = translate x (height / 2) $ color myGreen $ rectangleSolid pipeWidth (fromIntegral windowHeight - height)
-    in
-        pictures [upperPipe]
 
 handleEvent :: Event -> GameState -> IO GameState
 handleEvent (EventKey (SpecialKey KeySpace) Down _ _) gameState
@@ -109,23 +93,40 @@ restartGame = do
     gen <- getStdGen
     initialState gen
 
-stepGame :: Float -> GameState -> StdGen -> IO GameState
-stepGame dt gameState@(GameState birdY birdVelocity pipes gameOver) gen
+stepGame :: Float -> GameState -> IO GameState
+stepGame dt gameState@(GameState birdY birdVelocity pipes gameOver)
     | gameOver = return gameState
     | otherwise = do
         let
             newBirdY = birdY + birdVelocity * dt
             newVelocity = birdVelocity + gravity * dt
-            (newPipes, gen') = updatePipes dt pipes gen
-            collision = checkCollision (birdY, newBirdY)
+            newPipes = movePipes pipes dt
+            collision = checkCollision newBirdY pipes
             gameOver' = if collision then True else gameOver
         return $ gameState { birdY = newBirdY, birdVelocity = newVelocity, pipes = newPipes, gameOver = gameOver' }
 
-checkCollision :: (Float, Float) -> Bool
-checkCollision (oldY, newY) = newY <= (- fromIntegral windowHeight / 2 + groundHeight / 2) || newY >= (fromIntegral windowHeight / 2 - cloudHeight / 2)
+checkCollision :: Float -> [(Float, Float)] -> Bool
+checkCollision birdY pipes =
+    let
+        birdTopY = birdY + 20
+        birdBottomY = birdY - 20
+        groundTopY = -fromIntegral windowHeight / 2 + groundHeight / 2
+        cloudTopY = fromIntegral windowHeight / 2 - cloudHeight / 2
+        cloudBottomY = cloudTopY - cloudHeight
+        topPipeTops = map (\(_, gapY) -> gapY / 2) pipes
+        bottomPipeBottoms = map (\(_, gapY) -> -gapY / 2) pipes
+        pipeLeftXs = map (\(x, _) -> x - pipeWidth / 2) pipes
+        pipeRightXs = map (\(x, _) -> x + pipeWidth / 2) pipes
+        birdLeftX = -20
+        birdRightX = 20
+        maxBirdTopY = maximum (birdTopY : topPipeTops)
+        minBirdBottomY = minimum (birdBottomY : bottomPipeBottoms)
+        birdCollidesWithPipes = birdLeftX <= maximum pipeRightXs && birdRightX >= minimum pipeLeftXs &&
+                                (birdTopY >= maxBirdTopY || birdBottomY <= minBirdBottomY)
+        birdCollidesWithGround = birdY <= groundTopY
+        birdCollidesWithClouds = birdY >= cloudBottomY
+    in
+        birdCollidesWithPipes || birdCollidesWithGround || birdCollidesWithClouds
 
-updatePipes :: Float -> [(Float, Float)] -> StdGen -> ([(Float, Float)], StdGen)
-updatePipes dt pipes gen = (map (\(x, h) -> (x - pipeSpeed * dt, h)) pipes, gen')
-    where
-        pipeSpeed = 100
-        (gen', _) = split gen
+movePipes :: [(Float, Float)] -> Float -> [(Float, Float)]
+movePipes pipes dt = map (\(x, gapY) -> (x - dt * 100, gapY)) pipes
